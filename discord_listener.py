@@ -1,55 +1,32 @@
 #!/usr/bin/env python3
-"""GEX Discord Listener — saves the latest GEX chart image for each symbol."""
+"""GEX Discord Listener — saves GEX chart images + scrapes history on startup."""
 
 import os
 import sys
-import json
 import asyncio
 import aiohttp
 import aiofiles
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import discord
 
-BASE_DIR    = Path(__file__).resolve().parent
-CONFIG_PATH = BASE_DIR / "config.json"
-IMAGE_DIR   = BASE_DIR / "gex_images"
+BASE_DIR = Path(__file__).resolve().parent
+IMAGE_DIR = BASE_DIR / "gex_images"
 VALID_SYMBOLS = {"SPY", "QQQ", "IWM"}
+
+TOKEN = os.environ.get("DISCORD_TOKEN", "")
+CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", "0"))
+BOT_ID = int(os.environ.get("TRADYTICS_BOT_ID", "0"))
 
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}", flush=True)
 
 
-def load_config() -> dict:
-    env_token   = os.environ.get("DISCORD_TOKEN")
-    env_channel = os.environ.get("DISCORD_CHANNEL_ID")
-    env_bot     = os.environ.get("TRADYTICS_BOT_ID")
-    if env_token and env_channel and env_bot:
-        log("[CONFIG] Loaded from environment variables")
-        return {"token": env_token, "channel_id": int(env_channel), "tradytics_bot_id": int(env_bot)}
-
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH) as f:
-            cfg = json.load(f)
-        if cfg.get("token") and cfg.get("channel_id") and cfg.get("tradytics_bot_id"):
-            cfg["channel_id"]       = int(cfg["channel_id"])
-            cfg["tradytics_bot_id"] = int(cfg["tradytics_bot_id"])
-            return cfg
-
-    print("=== First-Time Setup ===")
-    cfg = {
-        "token":            input("Discord user token: ").strip(),
-        "channel_id":       int(input("Tradytics channel ID: ").strip()),
-        "tradytics_bot_id": int(input("Tradytics Bot V2 user ID: ").strip()),
-    }
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(cfg, f, indent=2)
-    return cfg
-
-
-def extract_symbol(title: str) -> str | None:
+def extract_symbol(title):
+    if not title:
+        return None
     t = title.upper()
     for sym in VALID_SYMBOLS:
         if sym in t:
@@ -57,74 +34,126 @@ def extract_symbol(title: str) -> str | None:
     return None
 
 
-config = load_config()
+def get_image_url(embed):
+    if embed.image and embed.image.url:
+        return embed.image.url
+    if embed.thumbnail and embed.thumbnail.url:
+        return embed.thumbnail.url
+    return None
+
+
+async def save_image(url, symbol, timestamp):
+    """Download and save a GEX chart image."""
+    IMAGE_DIR.mkdir(parents=True, exist_ok=True)
+    ts_str = timestamp.strftime("%Y-%m-%d_%H-%M-%S")
+
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status != 200:
+                log(f"[WARN] HTTP {resp.status} downloading {symbol}")
+                return False
+            data = await resp.read()
+
+    # Save timestamped copy (for history/calendar)
+    history_path = IMAGE_DIR / f"{ts_str}_{symbol}.png"
+    if not history_path.exists():
+        async with aiofiles.open(history_path, "wb") as f:
+            await f.write(data)
+
+    # Save/overwrite latest copy
+    latest_path = IMAGE_DIR / f"latest_{symbol}.png"
+    async with aiofiles.open(latest_path, "wb") as f:
+        await f.write(data)
+
+    return True
+
+
 client = discord.Client()
 
 
 @client.event
 async def on_ready():
     IMAGE_DIR.mkdir(parents=True, exist_ok=True)
-    log(f"Logged in as {client.user}")
-    ch = client.get_channel(config["channel_id"])
-    if ch:
-        log(f"Watching #{ch.name} in {ch.guild.name}")
-    log("Waiting for GEX charts...")
+    log(f"Logged in as {client.user} (ID: {client.user.id})")
+
+    # Fetch channel
+    try:
+        channel = await client.fetch_channel(CHANNEL_ID)
+        log(f"Watching #{channel.name} in {channel.guild.name}")
+    except Exception as e:
+        log(f"[ERROR] Cannot access channel {CHANNEL_ID}: {e}")
+        log("Bot will still listen for new messages...")
+        return
+
+    # Scrape history (last 30 days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    log(f"Scraping GEX history since {cutoff.strftime('%Y-%m-%d')}...")
+
+    count = 0
+    saved = 0
+    try:
+        async for message in channel.history(limit=None, after=cutoff, oldest_first=True):
+            count += 1
+            if count % 200 == 0:
+                log(f"  Scanned {count} messages, saved {saved} GEX charts...")
+
+            if message.author.id != BOT_ID:
+                continue
+            if not message.embeds:
+                continue
+
+            for embed in message.embeds:
+                symbol = extract_symbol(embed.title)
+                if not symbol:
+                    continue
+                image_url = get_image_url(embed)
+                if not image_url:
+                    continue
+
+                try:
+                    was_saved = await save_image(image_url, symbol, message.created_at)
+                    if was_saved:
+                        saved += 1
+                except Exception as e:
+                    log(f"[WARN] Failed to save historical {symbol}: {e}")
+
+    except Exception as e:
+        log(f"[ERROR] History scrape failed: {e}")
+
+    log(f"History scrape done: scanned {count} messages, saved {saved} GEX charts")
+    log("Now watching for new GEX charts...")
 
 
 @client.event
-async def on_message(message: discord.Message):
-    if message.channel.id != config["channel_id"]:
+async def on_message(message):
+    if message.channel.id != CHANNEL_ID:
         return
-    if message.author.id != config["tradytics_bot_id"]:
+    if message.author.id != BOT_ID:
         return
     if not message.embeds:
         return
 
     for embed in message.embeds:
-        if not embed.title:
-            continue
         symbol = extract_symbol(embed.title)
         if not symbol:
             continue
-
-        image_url = None
-        if embed.image and embed.image.url:
-            image_url = embed.image.url
-        elif embed.thumbnail and embed.thumbnail.url:
-            image_url = embed.thumbnail.url
-
+        image_url = get_image_url(embed)
         if not image_url:
             continue
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url) as resp:
-                    resp.raise_for_status()
-                    data = await resp.read()
-
-            # Save as latest_{SYMBOL}.png (always overwritten = always latest)
-            latest_path = IMAGE_DIR / f"latest_{symbol}.png"
-            async with aiofiles.open(latest_path, "wb") as f:
-                await f.write(data)
-
-            # Also save a timestamped copy for history
-            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            history_path = IMAGE_DIR / f"{ts}_{symbol}.png"
-            async with aiofiles.open(history_path, "wb") as f:
-                await f.write(data)
-
-            log(f"Saved {symbol} GEX chart -> {latest_path.name}")
+            await save_image(image_url, symbol, message.created_at)
+            log(f"NEW: Saved {symbol} GEX chart")
         except Exception as e:
-            log(f"[ERROR] Failed to save {symbol} image: {e}")
+            log(f"[ERROR] Failed to save {symbol}: {e}")
 
 
 if __name__ == "__main__":
-    try:
-        client.run(config["token"], log_handler=None)
-    except discord.LoginFailure:
-        print("
-[FATAL] Invalid Discord token.")
+    if not TOKEN or not CHANNEL_ID or not BOT_ID:
+        print("[FATAL] Set env vars: DISCORD_TOKEN, DISCORD_CHANNEL_ID, TRADYTICS_BOT_ID")
         sys.exit(1)
-    except KeyboardInterrupt:
-        print("
-[INFO] Shutting down.")
+    try:
+        client.run(TOKEN, log_handler=None)
+    except discord.LoginFailure:
+        print("[FATAL] Invalid Discord token.")
+        sys.exit(1)
