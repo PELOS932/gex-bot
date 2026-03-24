@@ -4,10 +4,11 @@ WORKDIR /app
 
 RUN pip install --no-cache-dir discord.py-self aiohttp aiofiles flask flask-cors
 
-COPY discord_listener.py server.py ./
+COPY discord_listener.py server.py start.sh ./
+RUN chmod +x start.sh
 
 RUN mkdir -p gex_images
 
 EXPOSE 5000
 
-CMD python3 discord_listener.py & python3 server.py
+CMD ["./start.sh"]
