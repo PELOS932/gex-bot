@@ -4,12 +4,18 @@
 import os
 import sys
 import asyncio
+import logging
 import aiohttp
 import aiofiles
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import discord
+
+# Enable discord.py internal logging so we can see connection errors
+logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                    format='[%(asctime)s] [%(name)s] %(levelname)s: %(message)s')
+logger = logging.getLogger('gex')
 
 BASE_DIR = Path(__file__).resolve().parent
 IMAGE_DIR = BASE_DIR / "gex_images"
@@ -158,7 +164,7 @@ if __name__ == "__main__":
         sys.exit(1)
     try:
         print("[INIT] Calling client.run()...", flush=True)
-        client.run(TOKEN, log_handler=None)
+        client.run(TOKEN)
     except discord.LoginFailure:
         print("[FATAL] Invalid Discord token.", flush=True)
         sys.exit(1)
