@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: gex-bot
+    runtime: docker
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
+      - key: DISCORD_CHANNEL_ID
+        sync: false
+      - key: TRADYTICS_BOT_ID
+        sync: false
+      - key: PORT
+        value: 5000
