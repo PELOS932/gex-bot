@@ -149,11 +149,19 @@ async def on_message(message):
 
 
 if __name__ == "__main__":
+    print("[INIT] Discord listener starting...", flush=True)
+    print(f"[INIT] TOKEN length: {len(TOKEN)}", flush=True)
+    print(f"[INIT] CHANNEL_ID: {CHANNEL_ID}", flush=True)
+    print(f"[INIT] BOT_ID: {BOT_ID}", flush=True)
     if not TOKEN or not CHANNEL_ID or not BOT_ID:
-        print("[FATAL] Set env vars: DISCORD_TOKEN, DISCORD_CHANNEL_ID, TRADYTICS_BOT_ID")
+        print("[FATAL] Set env vars: DISCORD_TOKEN, DISCORD_CHANNEL_ID, TRADYTICS_BOT_ID", flush=True)
         sys.exit(1)
     try:
+        print("[INIT] Calling client.run()...", flush=True)
         client.run(TOKEN, log_handler=None)
     except discord.LoginFailure:
-        print("[FATAL] Invalid Discord token.")
+        print("[FATAL] Invalid Discord token.", flush=True)
+        sys.exit(1)
+    except Exception as e:
+        print(f"[FATAL] Unexpected error: {e}", flush=True)
         sys.exit(1)
